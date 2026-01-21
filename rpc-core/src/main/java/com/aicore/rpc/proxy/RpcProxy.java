@@ -3,6 +3,8 @@ package com.aicore.rpc.proxy;
 import com.aicore.rpc.circuitbreaker.CircuitBreaker;
 import com.aicore.rpc.circuitbreaker.CircuitBreakerOpenException;
 import com.aicore.rpc.circuitbreaker.CircuitBreakerRegistry;
+import com.aicore.rpc.timeout.AdaptiveTimeout;
+import com.aicore.rpc.timeout.AdaptiveTimeoutRegistry;
 import com.aicore.rpc.client.RpcClientHandler;
 import com.aicore.rpc.client.pool.ChannelPoolManager;
 import com.aicore.rpc.config.ConfigManager;
@@ -138,8 +140,18 @@ public class RpcProxy {
                 });
 
                 // 主线程在这里阻塞等待最终结果
-                int requestTimeout = ConfigManager.getInt("rpc.client.request.timeout-seconds", 10);
+                // Use adaptive timeout or fallback to configured default
+                String timeoutKey = serviceName + "@" + address.getHostString() + ":" + address.getPort();
+                AdaptiveTimeout adaptiveTimeout = AdaptiveTimeoutRegistry.getInstance().getOrCreate(timeoutKey);
+                int requestTimeout = adaptiveTimeout.getTimeoutSeconds();
+                if (requestTimeout <= 0) {
+                    requestTimeout = ConfigManager.getInt("rpc.client.request.timeout-seconds", 10);
+                }
                 RpcResponse response = responseFuture.get(requestTimeout, TimeUnit.SECONDS);
+
+                // Record latency for adaptive timeout calculation
+                long callDuration = System.currentTimeMillis() - startTime;
+                adaptiveTimeout.recordLatency(callDuration);
 
                 if (response.getError() != null) {
                     status = "error";
