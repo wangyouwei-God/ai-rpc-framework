@@ -3,6 +3,9 @@ package com.aicore.rpc.proxy;
 import com.aicore.rpc.circuitbreaker.CircuitBreaker;
 import com.aicore.rpc.circuitbreaker.CircuitBreakerOpenException;
 import com.aicore.rpc.circuitbreaker.CircuitBreakerRegistry;
+import com.aicore.rpc.retry.RetryConfig;
+import com.aicore.rpc.retry.RetryPredicate;
+import com.aicore.rpc.retry.BackoffStrategy;
 import com.aicore.rpc.timeout.AdaptiveTimeout;
 import com.aicore.rpc.timeout.AdaptiveTimeoutRegistry;
 import com.aicore.rpc.client.RpcClientHandler;
@@ -57,117 +60,129 @@ public class RpcProxy {
 
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
-            Timer.Sample sample = Timer.start(meterRegistry);
             String serviceName = this.clazz.getName();
             String methodName = method.getName();
-            String status = "success";
-            long startTime = System.currentTimeMillis();
 
-            // 这个 responseFuture 是整个异步流程的最终结果
-            CompletableFuture<RpcResponse> responseFuture = new CompletableFuture<>();
-            InetSocketAddress address = null;
-            CircuitBreaker circuitBreaker = null;
+            // Retry configuration
+            RetryConfig retryConfig = RetryConfig.defaultConfig();
+            BackoffStrategy backoffStrategy = new BackoffStrategy(retryConfig);
+            int maxRetries = retryConfig.getMaxAttempts();
+            Exception lastException = null;
 
-            try {
-                List<InetSocketAddress> serviceAddresses = registry.discover(serviceName);
-                if (serviceAddresses == null || serviceAddresses.isEmpty()) {
-                    throw new RuntimeException("No available service provider for: " + serviceName);
-                }
-                address = loadBalancer.select(serviceAddresses);
+            for (int attempt = 0; attempt < maxRetries; attempt++) {
+                Timer.Sample sample = Timer.start(meterRegistry);
+                String status = "success";
+                long startTime = System.currentTimeMillis();
+                CompletableFuture<RpcResponse> responseFuture = new CompletableFuture<>();
 
-                // Get or create circuit breaker for this endpoint
-                String cbName = serviceName + "@" + address.getHostString() + ":" + address.getPort();
-                circuitBreaker = CircuitBreakerRegistry.getInstance().getOrCreate(cbName);
-
-                // Check if circuit breaker allows the request
-                if (!circuitBreaker.allowRequest()) {
-                    throw new CircuitBreakerOpenException(cbName, circuitBreaker.getState());
-                }
-
-                ChannelPool pool = poolManager.getOrCreatePool(address);
-                Future<Channel> channelFuture = pool.acquire();
-                final CircuitBreaker cb = circuitBreaker;
-                final long callStartTime = startTime;
-
-                // 异步地处理连接获取的结果
-                channelFuture.addListener((FutureListener<Channel>) f -> {
-                    if (f.isSuccess()) {
-                        Channel channel = f.getNow();
-                        try {
-                            RpcRequest request = RpcRequest.builder()
-                                    .className(serviceName)
-                                    .methodName(methodName)
-                                    .paramTypes(method.getParameterTypes())
-                                    .params(args).build();
-
-                            RpcMessage message = RpcMessage.builder()
-                                    .serializerType(ProtocolConstants.SERIALIZER_PROTOSTUFF)
-                                    .messageType(ProtocolConstants.TYPE_REQUEST)
-                                    .messageId(MessageIdGenerator.nextId())
-                                    .data(request).build();
-
-                            RpcClientHandler handler = channel.pipeline().get(RpcClientHandler.class);
-
-                            // 调用异步的 sendRequest，它返回一个 Future
-                            CompletableFuture<RpcResponse> rpcCallFuture = handler.sendRequest(message, channel);
-
-                            // 链式处理：当 rpcCallFuture 完成时，再来完成 responseFuture
-                            rpcCallFuture.whenComplete((response, throwable) -> {
-                                // 无论成功或失败，都释放连接回池
-                                pool.release(channel);
-                                long duration = System.currentTimeMillis() - callStartTime;
-
-                                if (throwable != null) {
-                                    cb.recordFailure();
-                                    responseFuture.completeExceptionally(throwable);
-                                } else if (response.getError() != null) {
-                                    cb.recordFailure();
-                                    responseFuture.complete(response);
-                                } else {
-                                    cb.recordSuccess(duration);
-                                    responseFuture.complete(response);
-                                }
-                            });
-                        } catch (Exception e) {
-                            pool.release(channel); // 异常时也要释放连接
-                            cb.recordFailure();
-                            responseFuture.completeExceptionally(e);
-                        }
-                    } else {
-                        cb.recordFailure();
-                        responseFuture.completeExceptionally(f.cause());
+                try {
+                    List<InetSocketAddress> serviceAddresses = registry.discover(serviceName);
+                    if (serviceAddresses == null || serviceAddresses.isEmpty()) {
+                        throw new RuntimeException("No available service provider for: " + serviceName);
                     }
-                });
+                    InetSocketAddress address = loadBalancer.select(serviceAddresses);
 
-                // 主线程在这里阻塞等待最终结果
-                // Use adaptive timeout or fallback to configured default
-                String timeoutKey = serviceName + "@" + address.getHostString() + ":" + address.getPort();
-                AdaptiveTimeout adaptiveTimeout = AdaptiveTimeoutRegistry.getInstance().getOrCreate(timeoutKey);
-                int requestTimeout = adaptiveTimeout.getTimeoutSeconds();
-                if (requestTimeout <= 0) {
-                    requestTimeout = ConfigManager.getInt("rpc.client.request.timeout-seconds", 10);
-                }
-                RpcResponse response = responseFuture.get(requestTimeout, TimeUnit.SECONDS);
+                    // Get or create circuit breaker for this endpoint
+                    String cbName = serviceName + "@" + address.getHostString() + ":" + address.getPort();
+                    CircuitBreaker circuitBreaker = CircuitBreakerRegistry.getInstance().getOrCreate(cbName);
 
-                // Record latency for adaptive timeout calculation
-                long callDuration = System.currentTimeMillis() - startTime;
-                adaptiveTimeout.recordLatency(callDuration);
+                    // Check if circuit breaker allows the request
+                    if (!circuitBreaker.allowRequest()) {
+                        throw new CircuitBreakerOpenException(cbName, circuitBreaker.getState());
+                    }
 
-                if (response.getError() != null) {
+                    ChannelPool pool = poolManager.getOrCreatePool(address);
+                    Future<Channel> channelFuture = pool.acquire();
+                    final CircuitBreaker cb = circuitBreaker;
+                    final long callStartTime = startTime;
+
+                    channelFuture.addListener((FutureListener<Channel>) f -> {
+                        if (f.isSuccess()) {
+                            Channel channel = f.getNow();
+                            try {
+                                RpcRequest request = RpcRequest.builder()
+                                        .className(serviceName)
+                                        .methodName(methodName)
+                                        .paramTypes(method.getParameterTypes())
+                                        .params(args).build();
+
+                                RpcMessage message = RpcMessage.builder()
+                                        .serializerType(ProtocolConstants.SERIALIZER_PROTOSTUFF)
+                                        .messageType(ProtocolConstants.TYPE_REQUEST)
+                                        .messageId(MessageIdGenerator.nextId())
+                                        .data(request).build();
+
+                                RpcClientHandler handler = channel.pipeline().get(RpcClientHandler.class);
+                                CompletableFuture<RpcResponse> rpcCallFuture = handler.sendRequest(message, channel);
+
+                                rpcCallFuture.whenComplete((response, throwable) -> {
+                                    pool.release(channel);
+                                    long duration = System.currentTimeMillis() - callStartTime;
+
+                                    if (throwable != null) {
+                                        cb.recordFailure();
+                                        responseFuture.completeExceptionally(throwable);
+                                    } else if (response.getError() != null) {
+                                        cb.recordFailure();
+                                        responseFuture.complete(response);
+                                    } else {
+                                        cb.recordSuccess(duration);
+                                        responseFuture.complete(response);
+                                    }
+                                });
+                            } catch (Exception e) {
+                                pool.release(channel);
+                                cb.recordFailure();
+                                responseFuture.completeExceptionally(e);
+                            }
+                        } else {
+                            cb.recordFailure();
+                            responseFuture.completeExceptionally(f.cause());
+                        }
+                    });
+
+                    // Wait for result with adaptive timeout
+                    String timeoutKey = serviceName + "@" + address.getHostString() + ":" + address.getPort();
+                    AdaptiveTimeout adaptiveTimeout = AdaptiveTimeoutRegistry.getInstance().getOrCreate(timeoutKey);
+                    int requestTimeout = adaptiveTimeout.getTimeoutSeconds();
+                    if (requestTimeout <= 0) {
+                        requestTimeout = ConfigManager.getInt("rpc.client.request.timeout-seconds", 10);
+                    }
+                    RpcResponse response = responseFuture.get(requestTimeout, TimeUnit.SECONDS);
+
+                    // Record latency
+                    long callDuration = System.currentTimeMillis() - startTime;
+                    adaptiveTimeout.recordLatency(callDuration);
+
+                    if (response.getError() != null) {
+                        status = "error";
+                        throw response.getError();
+                    }
+                    return response.getResult();
+
+                } catch (CircuitBreakerOpenException e) {
+                    status = "circuit_open";
+                    sample.stop(meterRegistry.timer("rpc.client.requests", "service", serviceName,
+                            "method", methodName, "status", status));
+                    throw e;
+                } catch (Exception e) {
+                    // Check if retryable
+                    if (RetryPredicate.isRetryable(e) && attempt < maxRetries - 1) {
+                        status = "retry";
+                        sample.stop(meterRegistry.timer("rpc.client.requests", "service", serviceName,
+                                "method", methodName, "status", status));
+                        long delay = backoffStrategy.calculateDelay(attempt);
+                        Thread.sleep(delay);
+                        lastException = e;
+                        continue;
+                    }
                     status = "error";
-                    throw response.getError();
+                    sample.stop(meterRegistry.timer("rpc.client.requests", "service", serviceName,
+                            "method", methodName, "status", status));
+                    throw e;
                 }
-                return response.getResult();
-            } catch (CircuitBreakerOpenException e) {
-                status = "circuit_open";
-                throw e;
-            } catch (Exception e) {
-                status = "error";
-                throw e;
-            } finally {
-                sample.stop(meterRegistry.timer("rpc.client.requests", "service", serviceName, "method", methodName,
-                        "status", status));
             }
+            throw lastException != null ? lastException : new RuntimeException("Retry exhausted");
         }
     }
 }
