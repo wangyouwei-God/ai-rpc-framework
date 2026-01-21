@@ -1,0 +1,2 @@
+com.aicore.rpc.loadbalance.RandomLoadBalancer
+com.aicore.rpc.loadbalance.AIPredictiveLoadBalancer
