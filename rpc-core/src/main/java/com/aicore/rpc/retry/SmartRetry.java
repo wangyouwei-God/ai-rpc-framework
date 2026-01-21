@@ -3,11 +3,16 @@ package com.aicore.rpc.retry;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Smart retry executor with exponential backoff and jitter.
  * Integrates with circuit breaker to avoid retrying on open circuits.
  */
 public class SmartRetry {
+
+    private static final Logger logger = LoggerFactory.getLogger(SmartRetry.class);
 
     private final RetryConfig config;
     private final BackoffStrategy backoffStrategy;
@@ -61,8 +66,8 @@ public class SmartRetry {
                 long delay = backoffStrategy.calculateDelay(attempt);
                 totalRetryCount.incrementAndGet();
 
-                System.out.println("[SmartRetry] Attempt " + (attempt + 1) + " failed: "
-                        + e.getClass().getSimpleName() + ". Retrying in " + delay + "ms...");
+                logger.warn("Attempt {} failed: {}. Retrying in {}ms...",
+                        attempt + 1, e.getClass().getSimpleName(), delay);
 
                 try {
                     Thread.sleep(delay);

@@ -5,6 +5,8 @@ import com.aicore.rpc.loadbalance.ClientMetricsCollector.EndpointMetrics;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import okhttp3.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.lang.reflect.Type;
@@ -31,6 +33,8 @@ import java.util.stream.Collectors;
  * 5. 如果AI服务请求失败，则自动降级为简单的随机负载均衡，保证高可用性。
  */
 public class AIPredictiveLoadBalancer implements LoadBalancer {
+
+    private static final Logger logger = LoggerFactory.getLogger(AIPredictiveLoadBalancer.class);
 
     private final String aiServiceUrl;
     private final OkHttpClient httpClient = new OkHttpClient();
@@ -68,8 +72,7 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
         if (currentAddresses.isEmpty()) {
             return; // 如果还没有已知的服务地址，则跳过本次更新
         }
-        System.out.println("[AI LoadBalancer Updater] Starting scheduled weight update for " + currentAddresses.size()
-                + " nodes...");
+        logger.debug("Starting scheduled weight update for {} nodes", currentAddresses.size());
         Map<InetSocketAddress, Double> newWeights = fetchWeightsFromAIService(currentAddresses);
         // 原子性地替换整个缓存，确保select方法总能读到完整、一致的权重集
         this.weightCache = newWeights;
@@ -88,7 +91,7 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
         Map<InetSocketAddress, Double> currentWeights = this.weightCache;
 
         if (currentWeights.isEmpty()) {
-            System.out.println("[AI LoadBalancer] Cache is empty on first call. Fetching weights immediately...");
+            logger.debug("Cache is empty on first call. Fetching weights immediately...");
             currentWeights = fetchWeightsFromAIService(serviceAddresses);
             this.weightCache = currentWeights;
         }
@@ -127,9 +130,8 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
         for (Map.Entry<InetSocketAddress, Double> entry : finalWeights.entrySet()) {
             cumulativeWeight += entry.getValue();
             if (randomPoint < cumulativeWeight) {
-                System.out.println("[AI LoadBalancer] Selected: " + entry.getKey()
-                        + " (AI Weight: " + currentWeights.getOrDefault(entry.getKey(), 1.0)
-                        + ", Final: " + entry.getValue() + ")");
+                logger.debug("Selected: {} (AI Weight: {}, Final: {})",
+                        entry.getKey(), currentWeights.getOrDefault(entry.getKey(), 1.0), entry.getValue());
                 return entry.getKey();
             }
         }
@@ -167,11 +169,10 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
                 // 使用AI服务返回的权重，如果没有则默认1.0
                 result.put(address, stringWeights.getOrDefault(key, 1.0));
             }
-            System.out.println("[AI LoadBalancer] Fetched new weights: " + result);
+            logger.debug("Fetched new weights: {}", result);
             return result;
         } catch (IOException e) {
-            System.err.println("[AI LoadBalancer] Failed to fetch weights from AI service: " + e.getMessage()
-                    + ". Falling back to equal weights policy.");
+            logger.warn("Failed to fetch weights from AI service: {}. Falling back to equal weights.", e.getMessage());
             // 降级策略：如果请求AI服务失败，则认为所有节点权重相等（退化为随机负载均衡）
             return addresses.stream()
                     .collect(Collectors.toMap(addr -> addr, addr -> 1.0, (o1, o2) -> o1, ConcurrentHashMap::new));

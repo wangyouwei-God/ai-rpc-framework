@@ -4,11 +4,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Circuit Breaker implementation with sliding window metrics.
  * Thread-safe implementation using atomic operations.
  */
 public class CircuitBreaker {
+
+    private static final Logger logger = LoggerFactory.getLogger(CircuitBreaker.class);
 
     private final String name;
     private final CircuitBreakerConfig config;
@@ -145,8 +150,7 @@ public class CircuitBreaker {
         CircuitBreakerState oldState = state.getAndSet(newState);
         if (oldState != newState) {
             lastStateTransitionTime.set(System.currentTimeMillis());
-            System.out.println("[CircuitBreaker:" + name + "] State transition: "
-                    + oldState + " -> " + newState);
+            logger.info("[CircuitBreaker:{}] State transition: {} -> {}", name, oldState, newState);
         }
     }
 
