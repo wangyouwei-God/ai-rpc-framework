@@ -146,12 +146,8 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
             Map<InetSocketAddress, Double> result = new ConcurrentHashMap<>();
             for (InetSocketAddress address : addresses) {
                 String key = address.getHostString() + ":" + address.getPort();
-                if ( address.getPort() == 8888 ) {
-//                    result.put(address, stringWeights.getOrDefault(key, 0.5));
-                    result.put(address, 0.2);
-                } else {
-                    result.put(address, 0.8);
-                }
+                // 使用AI服务返回的权重，如果没有则默认1.0
+                result.put(address, stringWeights.getOrDefault(key, 1.0));
             }
             System.out.println("[AI LoadBalancer] Fetched new weights: " + result);
             return result;

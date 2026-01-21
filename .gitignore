@@ -35,5 +35,20 @@ build/
 .vscode/
 
 ### Mac OS ###
-.DS_Storeai-forecasting-service/venv/
+.DS_Store
+
+### Python ###
+ai-forecasting-service/venv/
 ai-forecasting-service/__pycache__/
+*.pyc
+*.pyo
+__pycache__/
+
+### Logs ###
+*.log
+logs/
+
+### IDE ###
+.idea/
+*.iml
+
