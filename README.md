@@ -20,12 +20,14 @@ Traditional RPC frameworks require manual tuning of parameters like load balanci
 | Feature | Description |
 |---------|-------------|
 | **AI Load Balancing** | Predictive routing based on server health scores |
+| **Circuit Breaker** | Auto fault isolation with CLOSED/OPEN/HALF_OPEN states |
+| **Adaptive Timeout** | Self-tuning timeout based on P99 latency |
+| **Smart Retry** | Exponential backoff with jitter |
+| **Spring Boot Starter** | `@AiRpcService`, `@AiRpcReference` annotations |
 | **High Performance** | Netty-based async I/O with connection pooling |
 | **Service Discovery** | Nacos integration with health checking |
 | **Custom Protocol** | Binary protocol with magic number validation |
 | **Multiple Serializers** | Protostuff, JDK serialization |
-| **SSL/TLS** | Secure communication by default |
-| **Graceful Shutdown** | Zero-downtime deployment support |
 | **Observability** | Micrometer metrics with Prometheus export |
 
 ## Architecture
@@ -61,8 +63,9 @@ Traditional RPC frameworks require manual tuning of parameters like load balanci
 | Module | Description |
 |--------|-------------|
 | `rpc-api` | Service interface definitions |
-| `rpc-core` | Core RPC client and server implementation |
+| `rpc-core` | Core RPC client/server, circuit breaker, adaptive timeout, retry |
 | `rpc-registry` | Service registry abstraction layer |
+| `ai-rpc-spring-boot-starter` | Spring Boot auto-configuration |
 | `example-provider` | Example service provider |
 | `example-consumer` | Example service consumer |
 | `ai-forecasting-service` | Python-based AI prediction service |
@@ -163,13 +166,20 @@ The AI Load Balancer works by:
 
 See [ROADMAP.md](docs/ROADMAP.md) for planned features.
 
-### Planned Features
+### Implemented Features
 
 - Spring Boot Starter with annotation support
-- Adaptive circuit breaker with anomaly detection
-- Self-tuning timeout based on P99 latency
+- Circuit Breaker with state machine
+- Adaptive timeout based on P99 latency
+- Smart Retry with exponential backoff and jitter
+- Client-side metrics fusion for load balancing
+
+### Planned Features
+
 - Multi-registry support (Zookeeper, Consul, etcd)
 - OpenTelemetry distributed tracing
+- Rate limiting with token bucket
+- Service mesh integration
 
 ## Contributing
 
