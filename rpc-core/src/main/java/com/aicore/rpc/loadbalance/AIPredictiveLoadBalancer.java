@@ -1,6 +1,7 @@
 package com.aicore.rpc.loadbalance;
 
 import com.aicore.rpc.config.ConfigManager;
+import com.aicore.rpc.loadbalance.ClientMetricsCollector.EndpointMetrics;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import okhttp3.*;
@@ -67,7 +68,8 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
         if (currentAddresses.isEmpty()) {
             return; // 如果还没有已知的服务地址，则跳过本次更新
         }
-        System.out.println("[AI LoadBalancer Updater] Starting scheduled weight update for " + currentAddresses.size() + " nodes...");
+        System.out.println("[AI LoadBalancer Updater] Starting scheduled weight update for " + currentAddresses.size()
+                + " nodes...");
         Map<InetSocketAddress, Double> newWeights = fetchWeightsFromAIService(currentAddresses);
         // 原子性地替换整个缓存，确保select方法总能读到完整、一致的权重集
         this.weightCache = newWeights;
@@ -90,39 +92,54 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
             currentWeights = fetchWeightsFromAIService(serviceAddresses);
             this.weightCache = currentWeights;
         }
-        // 1. 过滤出当前仍然存活的节点及其权重
-        Map<InetSocketAddress, Double> activeWeights = new ConcurrentHashMap<>();
-        for(InetSocketAddress address : serviceAddresses) {
-            // 如果缓存中有权重，就用它；如果没有（比如新节点刚加入），给一个默认权重1.0，让它有机会被选中
-            activeWeights.put(address, currentWeights.getOrDefault(address, 1.0));
+
+        // 1. Collect client-side metrics for local weight adjustment
+        ClientMetricsCollector collector = ClientMetricsCollector.getInstance();
+        Map<InetSocketAddress, EndpointMetrics> clientMetrics = collector.collectMetrics("", serviceAddresses);
+
+        // 2. Calculate final weights by combining AI weights with local metrics
+        Map<InetSocketAddress, Double> finalWeights = new ConcurrentHashMap<>();
+        for (InetSocketAddress address : serviceAddresses) {
+            double aiWeight = currentWeights.getOrDefault(address, 1.0);
+
+            // Apply local weight adjustment based on circuit breaker and latency
+            EndpointMetrics metrics = clientMetrics.get(address);
+            double localMultiplier = 1.0;
+            if (metrics != null) {
+                localMultiplier = collector.calculateLocalWeight(metrics);
+            }
+
+            // Final weight = AI weight * local multiplier
+            double finalWeight = aiWeight * localMultiplier;
+            finalWeights.put(address, finalWeight);
         }
 
-        // 2. 计算总权重
-        double totalWeight = activeWeights.values().stream().mapToDouble(Double::doubleValue).sum();
+        // 3. Calculate total weight
+        double totalWeight = finalWeights.values().stream().mapToDouble(Double::doubleValue).sum();
         if (totalWeight <= 0) {
+            // All nodes are unhealthy, fallback to random
             return serviceAddresses.get(random.nextInt(serviceAddresses.size()));
         }
 
-        // 3. 产生随机点
+        // 4. Weighted random selection
         double randomPoint = random.nextDouble() * totalWeight;
-
-        // 4. 遍历并选择
-        // 这个循环中，我们不再修改 randomPoint，而是使用一个局部累加变量，
-        // 从而避免了 Lambda 引用问题（虽然这里没有显式 Lambda，但这是更健壮的写法）。
         double cumulativeWeight = 0.0;
-        for (Map.Entry<InetSocketAddress, Double> entry : activeWeights.entrySet()) {
+        for (Map.Entry<InetSocketAddress, Double> entry : finalWeights.entrySet()) {
             cumulativeWeight += entry.getValue();
             if (randomPoint < cumulativeWeight) {
-                System.out.println("[AI LoadBalancer] Selected: " + entry.getKey() + " (Weight: " + entry.getValue() + ")");
+                System.out.println("[AI LoadBalancer] Selected: " + entry.getKey()
+                        + " (AI Weight: " + currentWeights.getOrDefault(entry.getKey(), 1.0)
+                        + ", Final: " + entry.getValue() + ")");
                 return entry.getKey();
             }
         }
-        // 兜底策略
+        // Fallback
         return serviceAddresses.get(serviceAddresses.size() - 1);
     }
 
     /**
      * 调用Python AI服务，获取节点权重。
+     * 
      * @param addresses 当前可用的服务地址列表
      * @return 一个从地址到权重的映射
      */
@@ -140,7 +157,8 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
                 throw new IOException("Unexpected HTTP code " + response);
             }
             String responseBody = response.body().string();
-            Type type = new TypeToken<Map<String, Double>>(){}.getType();
+            Type type = new TypeToken<Map<String, Double>>() {
+            }.getType();
             Map<String, Double> stringWeights = gson.fromJson(responseBody, type);
 
             Map<InetSocketAddress, Double> result = new ConcurrentHashMap<>();
@@ -152,9 +170,11 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
             System.out.println("[AI LoadBalancer] Fetched new weights: " + result);
             return result;
         } catch (IOException e) {
-            System.err.println("[AI LoadBalancer] Failed to fetch weights from AI service: " + e.getMessage() + ". Falling back to equal weights policy.");
+            System.err.println("[AI LoadBalancer] Failed to fetch weights from AI service: " + e.getMessage()
+                    + ". Falling back to equal weights policy.");
             // 降级策略：如果请求AI服务失败，则认为所有节点权重相等（退化为随机负载均衡）
-            return addresses.stream().collect(Collectors.toMap(addr -> addr, addr -> 1.0, (o1, o2) -> o1, ConcurrentHashMap::new));
+            return addresses.stream()
+                    .collect(Collectors.toMap(addr -> addr, addr -> 1.0, (o1, o2) -> o1, ConcurrentHashMap::new));
         }
     }
 }
