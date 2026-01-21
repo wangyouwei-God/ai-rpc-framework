@@ -1,0 +1,12 @@
+server:
+  port: 8080
+
+ai-rpc:
+  registry:
+    type: nacos
+    address: 127.0.0.1:8848
+  server:
+    port: 9000
+  loadbalancer:
+    type: ai
+    ai-service-url: http://localhost:8000/predict

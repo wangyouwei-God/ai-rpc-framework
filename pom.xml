@@ -13,6 +13,7 @@
         <module>rpc-api</module>
         <module>rpc-core</module>
         <module>rpc-registry</module>
+        <module>ai-rpc-spring-boot-starter</module>
         <module>example-provider</module>
         <module>example-consumer</module>
     </modules>
@@ -39,10 +40,22 @@
         <!-- 指标监控依赖版本 -->
         <micrometer.version>1.9.5</micrometer.version>
         <prometheus-simpleclient.version>0.15.0</prometheus-simpleclient.version>
+
+        <!-- Spring Boot -->
+        <spring-boot.version>2.7.18</spring-boot.version>
     </properties>
 
     <dependencyManagement>
         <dependencies>
+            <!-- Spring Boot -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
             <!-- Netty -->
             <dependency>
                 <groupId>io.netty</groupId>
