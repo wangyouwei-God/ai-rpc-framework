@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # RPC Provider instances
+  - job_name: 'rpc_provider'
+    static_configs:
+      - targets: ['host.docker.internal:8081']
+    metrics_path: '/metrics'
+
+  # RPC Consumer instances
+  - job_name: 'rpc_consumer'
+    static_configs:
+      - targets: ['host.docker.internal:8082']
+    metrics_path: '/metrics'
+
+  # AI Forecasting Service
+  - job_name: 'ai_forecasting'
+    static_configs:
+      - targets: ['ai-forecasting:8000']
+    metrics_path: '/metrics'

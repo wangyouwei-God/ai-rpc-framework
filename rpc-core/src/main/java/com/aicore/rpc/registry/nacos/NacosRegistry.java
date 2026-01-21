@@ -22,24 +22,30 @@ public class NacosRegistry implements Registry {
         try {
             this.namingService = NamingFactory.createNamingService(nacosAddress);
 
-            // 阻塞等待，直到与Nacos Server的连接建立成功或超时
+            // 等待HTTP连接就绪（这是快速检查）
             boolean isConnected = false;
             long startTime = System.currentTimeMillis();
-            long timeout = TimeUnit.SECONDS.toMillis(15);
+            long timeout = TimeUnit.SECONDS.toMillis(30);
 
             while (!isConnected && (System.currentTimeMillis() - startTime < timeout)) {
                 String serverStatus = namingService.getServerStatus();
                 if ("UP".equals(serverStatus)) {
                     isConnected = true;
-                    System.out.println("Successfully connected to Nacos server.");
+                    System.out.println("Nacos HTTP connection established.");
                 } else {
-                    System.out.println("Waiting for Nacos connection... current status: " + serverStatus);
+                    System.out.println("Waiting for Nacos connection... status: " + serverStatus);
                     Thread.sleep(1000);
                 }
             }
             if (!isConnected) {
-                throw new RuntimeException("Failed to connect to Nacos server within " + timeout / 1000 + " seconds.");
+                throw new RuntimeException("Failed to connect to Nacos within " + timeout / 1000 + " seconds.");
             }
+
+            // 注意：gRPC客户端是异步初始化的，可能需要更长时间
+            // 服务注册时会通过重试机制等待gRPC就绪
+            System.out
+                    .println("NacosRegistry initialized. gRPC client will be ready when first registration succeeds.");
+
         } catch (NacosException | InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Failed to initialize NacosRegistry", e);
@@ -48,11 +54,33 @@ public class NacosRegistry implements Registry {
 
     @Override
     public void register(String serviceName, InetSocketAddress address) {
-        try {
-            namingService.registerInstance(serviceName, address.getHostName(), address.getPort());
-        } catch (NacosException e) {
-            throw new RuntimeException("Failed to register service to Nacos", e);
+        // 使用指数退避重试，等待gRPC客户端就绪
+        int maxRetries = 10;
+        long baseDelayMs = 1000;
+        long maxDelayMs = 10000;
+        Exception lastException = null;
+
+        for (int attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                namingService.registerInstance(serviceName, address.getHostName(), address.getPort());
+                System.out.println("Service registered successfully: " + serviceName + " at " + address);
+                return;
+            } catch (NacosException e) {
+                lastException = e;
+                // 计算指数退避延迟
+                long delay = Math.min(baseDelayMs * (1L << attempt), maxDelayMs);
+                System.out.println("Register attempt " + (attempt + 1) + "/" + maxRetries + " failed: " +
+                        e.getErrMsg() + ". Retrying in " + delay + "ms...");
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Interrupted during registration retry", ie);
+                }
+            }
         }
+        throw new RuntimeException("Failed to register service after " + maxRetries + " attempts. " +
+                "Last error: " + (lastException != null ? lastException.getMessage() : "unknown"), lastException);
     }
 
     /**
@@ -69,7 +97,6 @@ public class NacosRegistry implements Registry {
             System.err.println("Failed to deregister service '" + serviceName + "' from Nacos: " + e.getMessage());
         }
     }
-
 
     @Override
     public List<InetSocketAddress> discover(String serviceName) {

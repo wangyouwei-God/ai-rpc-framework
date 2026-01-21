@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # Nacos Registry
+  nacos:
+    image: nacos/nacos-server:v2.1.0
+    container_name: ai-rpc-nacos
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    environment:
+      - MODE=standalone
+      - PREFER_HOST_MODE=hostname
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8848/nacos/v1/console/health/readiness" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ai-rpc-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - nacos
+
+  # Grafana Visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ai-rpc-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./monitoring/dashboards:/var/lib/grafana/dashboards
+      - ./monitoring/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+
+  # AI Forecasting Service
+  ai-forecasting:
+    build:
+      context: ./ai-forecasting-service
+      dockerfile: Dockerfile
+    container_name: ai-rpc-forecasting
+    ports:
+      - "8000:8000"
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+  # Example Provider (build locally first)
+  # provider:
+  #   build:
+  #     context: .
+  #     dockerfile: example-provider/Dockerfile
+  #   container_name: ai-rpc-provider
+  #   ports:
+  #     - "9090:9090"
+  #     - "8081:8081"
+  #   environment:
+  #     - NACOS_ADDR=nacos:8848
+  #   depends_on:
+  #     nacos:
+  #       condition: service_healthy
+
+networks:
+  default:
+    name: ai-rpc-network

@@ -51,8 +51,8 @@ Traditional RPC frameworks require manual tuning of parameters like load balanci
 |   +---------------------------------------------------------------+   |
 |                                                                        |
 |   +---------------------------------------------------------------+   |
-|   |                    AI Forecasting Service                      |   |
-|   |   Prometheus Query -> Feature Engineering -> Health Score      |   |
+|   |               AI Forecasting Service v3.0                      |   |
+|   |   Prophet Time Series -> Anomaly Detection -> Health Score     |   |
 |   +---------------------------------------------------------------+   |
 |                                                                        |
 +-----------------------------------------------------------------------+

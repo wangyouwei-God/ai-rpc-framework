@@ -14,10 +14,10 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -37,9 +37,8 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
     private static final Logger logger = LoggerFactory.getLogger(AIPredictiveLoadBalancer.class);
 
     private final String aiServiceUrl;
-    private final OkHttpClient httpClient = new OkHttpClient();
+    private final OkHttpClient httpClient;
     private final Gson gson = new Gson();
-    private final Random random = new Random();
 
     // 使用 volatile 确保多线程环境下的可见性
     // 缓存从AI服务获取的权重
@@ -51,6 +50,13 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
         // 从配置文件读取AI服务地址
         this.aiServiceUrl = ConfigManager.getString("rpc.loadbalancer.ai.service.url", "http://localhost:8000/predict");
 
+        // 配置OkHttp客户端，设置超时防止阻塞
+        this.httpClient = new OkHttpClient.Builder()
+                .connectTimeout(3, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
+                .writeTimeout(3, TimeUnit.SECONDS)
+                .build();
+
         // 创建一个单线程的、可调度的执行器
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "ai-loadbalancer-updater");
@@ -61,6 +67,22 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
 
         // 安排一个周期性任务：启动后延迟5秒开始第一次更新，之后每10秒执行一次
         scheduler.scheduleAtFixedRate(this::updateWeights, 5, 10, TimeUnit.SECONDS);
+
+        // 注册JVM关闭钩子，优雅关闭资源
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            logger.info("Shutting down AI Load Balancer...");
+            scheduler.shutdown();
+            try {
+                if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                    scheduler.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                scheduler.shutdownNow();
+            }
+            httpClient.dispatcher().executorService().shutdown();
+            httpClient.connectionPool().evictAll();
+            logger.info("AI Load Balancer shutdown complete.");
+        }, "ai-loadbalancer-shutdown"));
     }
 
     /**
@@ -87,7 +109,8 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
             return serviceAddresses.get(0);
         }
 
-        this.knownAddresses = serviceAddresses;
+        // Defensive copy to avoid external modification issues
+        this.knownAddresses = new ArrayList<>(serviceAddresses);
         Map<InetSocketAddress, Double> currentWeights = this.weightCache;
 
         if (currentWeights.isEmpty()) {
@@ -121,11 +144,11 @@ public class AIPredictiveLoadBalancer implements LoadBalancer {
         double totalWeight = finalWeights.values().stream().mapToDouble(Double::doubleValue).sum();
         if (totalWeight <= 0) {
             // All nodes are unhealthy, fallback to random
-            return serviceAddresses.get(random.nextInt(serviceAddresses.size()));
+            return serviceAddresses.get(ThreadLocalRandom.current().nextInt(serviceAddresses.size()));
         }
 
         // 4. Weighted random selection
-        double randomPoint = random.nextDouble() * totalWeight;
+        double randomPoint = ThreadLocalRandom.current().nextDouble() * totalWeight;
         double cumulativeWeight = 0.0;
         for (Map.Entry<InetSocketAddress, Double> entry : finalWeights.entrySet()) {
             cumulativeWeight += entry.getValue();
